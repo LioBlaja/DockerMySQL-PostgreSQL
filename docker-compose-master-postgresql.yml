@@ -1,0 +1,41 @@
+version: '3.8'
+services:
+  postgres-master:
+    image: postgres:14 
+    container_name: postgres-master
+    environment:
+      POSTGRES_USER: repl_user 
+      POSTGRES_PASSWORD: repl_pass
+      POSTGRES_DB: imdb_db
+      POSTGRES_HOST_AUTH_METHOD: trust 
+    ports:
+      - "5432:5432" # Standard PostgreSQL port
+    volumes:
+      - pg_master_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d # For init scripts (like schema creation)
+      - ./data:/docker/data # Mount point for your data files
+    networks:
+      - pg-network
+
+  postgres-slave1:
+    image: postgres:14
+    container_name: postgres-slave1
+    environment:
+      POSTGRES_USER: repl_user
+      POSTGRES_PASSWORD: repl_pass
+      POSTGRES_DB: imdb_db
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_slave1_data:/var/lib/postgresql/data
+    depends_on:
+      - postgres-master
+    networks:
+      - pg-network
+
+networks:
+  pg-network:
+volumes:
+  pg_master_data:
+  pg_slave1_data:

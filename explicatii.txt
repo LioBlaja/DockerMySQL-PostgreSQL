@@ -1,0 +1,89 @@
+table schema:
+    title.basics.tsv.gz
+        tconst (string) - alphanumeric unique identifier of the title
+        titleType (string) – the type/format of the title (e.g. movie, short, tvseries, tvepisode, video, etc)
+        primaryTitle (string) – the more popular title / the title used by the filmmakers on promotional materials at the point of release
+        originalTitle (string) - original title, in the original language
+        isAdult (boolean) - 0: non-adult title; 1: adult title
+        startYear (YYYY) – represents the release year of a title. In the case of TV Series, it is the series start year
+        endYear (YYYY) – TV Series end year. '\N' for all other title types
+        runtimeMinutes – primary runtime of the title, in minutes
+        genres (string array) – includes up to three genres associated with the title
+
+A:
+
+Cautare:
+    in mysql e folosita indexarea pentru a spori viteza de cautare a datelor, in cazul nostru
+    a unui subsir in alt sir de caractere
+
+    initial pentru a cauta u subsir ce e la inceputul textului e suficient de 
+    eficient utilizarea indexului, insa ulterior daca cautam un subsir la mijloc, indexarea devine ineficienta
+
+    pentru a rezolva problema a fost utilizat full text indexation care va folosi arbori B in cautare
+    fapt ce reduce considerabil numarul de cautari
+
+B:
+
+Pentru a optimiza căutările cu subșiruri în PostgreSQL, avem la dispoziție două abordări principale:
+
+    Indexarea cu trigrame (pentru căutări care conțin un subșir):
+
+    Această tehnică este foarte eficientă pentru căutările de tip %subsir%. Un trigram este un grup de trei caractere consecutive dintr-un șir. Indexarea cu trigrame creează un index pe toate trigramele din text, permițând căutări rapide ale subșirurilor.
+
+        Crearea extensiei pg_trgm (o singură dată):
+        SQL
+
+CREATE EXTENSION pg_trgm;
+
+Crearea indexului GIN pe trigrame:
+SQL
+
+CREATE INDEX trgm_index_primary_title ON title_basics USING GIN (primaryTitle gin_trgm_ops);
+
+Utilizarea LIKE împreună cu indexul trigramelor (pentru eficiență):
+SQL
+
+    SELECT *
+    FROM title_basics
+    WHERE primaryTitle LIKE '%subsir%' AND primaryTitle % 'subsir';
+
+    Operatorul % este un operator special oferit de extensia pg_trgm și este mai eficient decât LIKE singur când avem un index trigram.
+
+Indexarea Fulltext (pentru căutări mai complexe bazate pe text):
+
+Indexarea fulltext este mai potrivită pentru căutări mai avansate, cum ar fi căutarea de cuvinte întregi, fraze, căutări cu prefix, clasificare după relevanță (ranking) și ignorarea cuvintelor comune (stop words). Deși poate fi folosită și pentru căutări cu subșiruri, este mai complexă decât indexarea cu trigrame pentru acest scop specific.
+
+    Crearea unei coloane tsvector și actualizarea ei cu un trigger:
+    SQL
+
+ALTER TABLE title_basics ADD COLUMN primaryTitle_tsv tsvector;
+UPDATE title_basics SET primaryTitle_tsv = to_tsvector('romanian', primaryTitle); -- Folosiți limba corespunzătoare
+
+CREATE TRIGGER update_primaryTitle_tsv
+BEFORE INSERT OR UPDATE ON title_basics
+FOR EACH ROW
+EXECUTE FUNCTION tsvector_update_trigger('primaryTitle_tsv', 'pg_catalog.romanian', 'primaryTitle');
+
+Crearea unui index GIN pe coloana tsvector:
+SQL
+
+CREATE INDEX idx_primary_title_tsv ON title_basics USING GIN (primaryTitle_tsv);
+
+Utilizarea operatorului @@ și a funcțiilor to_tsquery sau plainto_tsquery:
+
+Pentru căutări care conțin un subșir, se poate folosi phraseto_tsquery împreună cu LIKE și indexul de trigrame, așa cum am arătat mai sus.
+
+
+De ce indexarea cu trigrame este mai rapidă pentru căutarea unui subșir în interiorul altui text?
+
+Indexul cu trigrame stochează toate secvențele de trei caractere din text. Când căutăm %subsir%, PostgreSQL caută rapid în indexul trigramelor toate trigramele din subsir. Această căutare este mult mai rapidă decât scanarea întregii tabele cu LIKE.
+
+De ce indexarea fulltext este mai potrivită pentru căutări mai complexe?
+
+Indexarea fulltext utilizează un index inversat, care stochează o listă cu toate cuvintele distincte și documentele în care apar. Aceasta permite căutări eficiente bazate pe cuvinte, fraze, prefixe și alte criterii lingvistice. De asemenea, oferă funcții de clasificare a rezultatelor după relevanță.
+
+Concluzie:
+
+    Pentru căutări simple care încep cu un subșir (subsir%), un index B-tree este suficient.
+    Pentru căutări care conțin un subșir (%subsir%), indexarea cu trigrame este cea mai eficientă soluție.
+    Pentru căutări mai complexe bazate pe text, indexarea fulltext oferă funcționalități avansate și performanțe bune.

@@ -1,0 +1,200 @@
+First create 2 folders and put following files:
+    scripts/create_table.sql
+    data/title.basics.tsv
+
+docker-compose -f docker-compose-master.yml up -d
+
+docker exec -it mysql-master mysql -u root -ppassword < ./scripts/create_table.sql
+
+docker exec -it mysql-master mysql -u root -ppassword and run SHOW MASTER STATUS;
+
+# Connect to slave 1
+docker exec -it mysql-slave1 mysql -uroot -ppassword -e "
+CHANGE MASTER TO
+  MASTER_HOST='mysql-master',
+  MASTER_USER='repl_user',
+  MASTER_PASSWORD='repl_pass',
+  MASTER_LOG_FILE='mysql-bin.000004',  -- Replace with the actual log file name from SHOW MASTER STATUS
+  MASTER_LOG_POS= 932;  -- Replace with the actual position from SHOW MASTER STATUS
+START SLAVE;"
+
+
+docker exec -it mysql-master mysql -u root -ppassword
+
+use imdb_db;
+show tables;
+
+LOAD DATA LOCAL INFILE '/var/lib/mysql-files/title.basics.tsv/title.basics.tsv' INTO TABLE imdb_db.title_basics;
+
+ALTER TABLE title_basics
+ADD FULLTEXT INDEX (primaryTitle),
+ADD INDEX primary_title_index (primaryTitle);
+
+
+SELECT *
+FROM title_basics
+WHERE primaryTitle LIKE '%ita';
+
+SELECT *
+FROM title_basics
+WHERE primaryTitle LIKE '%men%';
+
+ELECT * FROM title_basics WHERE MATCH(primaryTitle) AGAINST('men' IN BOOLEAN MODE);
+
+--------------------------------
+data isolation violation examples:
+
+INSERT INTO title_basics (tconst, titleType, primaryTitle, originalTitle, isAdult, startYear, endYear, runtimeMinutes, genres) VALUES
+('tt0000001', 'short', 'Carmencita', 'Carmencita', 0, 1894, NULL, 1, 'Documentary,Short'),
+('tt0000002', 'short', 'Le Clown et ses chiens', 'Le Clown et ses chiens', 0, 1892, NULL, 1, 'Animation,Short');
+
+Case 1: Non-Repeatable Read (using READ COMMITTED)
+
+This case demonstrates a non-repeatable read, which can occur at the READ COMMITTED isolation level.
+
+Configuration:
+
+We'll set the isolation level for one session to READ COMMITTED. The other session will use the default REPEATABLE READ (or whatever your default is).
+
+Queries and Actions:
+
+    Session 1:
+    SQL
+
+-- Session 1
+START TRANSACTION;
+SELECT primaryTitle FROM title_basics WHERE tconst = 'tt0000001'; -- Reads 'Carmencita'
+-- DO NOT COMMIT YET
+
+Session 2:
+SQL
+
+-- Session 2
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+START TRANSACTION;
+UPDATE title_basics SET primaryTitle = 'Updated Carmencita' WHERE tconst = 'tt0000001';
+COMMIT;
+
+Session 1:
+SQL
+
+    -- Session 1
+    SELECT primaryTitle FROM title_basics WHERE tconst = 'tt0000001'; -- Reads 'Updated Carmencita'
+    COMMIT;
+
+Expected Results:
+
+    Session 1's first SELECT should return 'Carmencita'.
+    Session 1's second SELECT should return 'Updated Carmencita'.
+
+Obtained Results:
+
+The obtained results will match the expected results. Session 1 reads different values for 
+the same row within the same transaction, demonstrating a non-repeatable read.
+
+Explanation:
+
+At the READ COMMITTED isolation level, a transaction can only read committed data. 
+Session 2's update is committed between Session 1's two SELECT statements, so Session 1 
+sees the updated value in its second read.
+
+Case 2: Phantom Read (using REPEATABLE READ)
+
+This case demonstrates a phantom read, which can occur at the REPEATABLE READ isolation level.
+
+Configuration:
+
+We will use the default REPEATABLE READ isolation level for both sessions.
+
+Queries and Actions:
+
+    Session 1:
+    SQL
+
+-- Session 1
+START TRANSACTION;
+SELECT COUNT(*) FROM title_basics WHERE genres LIKE '%Animation%'; -- Counts 1 row
+-- DO NOT COMMIT YET
+
+Session 2:
+SQL
+
+-- Session 2
+START TRANSACTION;
+INSERT INTO title_basics (tconst, titleType, primaryTitle, originalTitle, isAdult, startYear, runtimeMinutes, genres) VALUES
+('tt0000003', 'short', 'New Animation', 'New Animation', 0, 2024, NULL, 2, 'Animation,Comedy');
+COMMIT;
+
+Session 1:
+SQL
+
+    -- Session 1
+    SELECT COUNT(*) FROM title_basics WHERE genres LIKE '%Animation%'; -- Counts 2 rows (phantom read)
+    COMMIT;
+
+Expected Results:
+
+    Session 1's first SELECT COUNT(*) should return 1.
+    Session 1's second SELECT COUNT(*) should return 2.
+
+Obtained Results:
+
+The obtained results will match the expected results. Session 1 sees a "phantom" row that was inserted by another transaction.
+
+Explanation:
+
+At the REPEATABLE READ isolation level, reads within a transaction are consistent. However, 
+REPEATABLE READ does not prevent phantom reads. A phantom read occurs when a transaction executes 
+a query that returns a set of rows, and another transaction inserts a new row that matches the query's 
+criteria. When the first transaction re-executes the query, it sees the new "phantom" row.
+
+
+B section:
+
+docker-compose -f docker-compose-master-postgresql.yml up -d
+
+docker exec -it postgres-master psql -u repl_user -prepl_pass < ./scripts/create_table.sql
+
+docker exec -it postgres-master psql -u repl_user -prepl_pass
+
+docker-compose exec postgres-master psql -U repl_user -d imdb_db -c "\copy title_basics FROM '/docker/data/title.basics.tsv' WITH (FORMAT CSV, HEADER, DELIMITER E'\t', QUOTE '\"');"
+
+ALTER TABLE title_basics ADD FULLTEXT INDEX ft_primary_title (primaryTitle); -- PostgreSQL full-text index syntax is different
+
+ALTER TABLE title_basics ADD FULLTEXT INDEX ft_primary_title (primaryTitle); -- PostgreSQL full-text index syntax is different
+
+CREATE INDEX primary_title_index ON title_basics (primaryTitle); -- Regular index
+
+
+/Carmencita
+
+ALTER TABLE title_basics ADD COLUMN primaryTitle_tsv tsvector;
+
+UPDATE title_basics SET primaryTitle_tsv = to_tsvector('english', primaryTitle); 
+
+-- Trigger to automatically update the tsvector column on inserts/updates
+CREATE TRIGGER update_primaryTitle_tsv
+BEFORE INSERT OR UPDATE ON title_basics
+FOR EACH ROW
+EXECUTE FUNCTION tsvector_update_trigger('primaryTitle_tsv', 'pg_catalog.english', 'primaryTitle'); 
+
+CREATE INDEX idx_primary_title_tsv ON title_basics USING GIN (primaryTitle_tsv);
+
+
+SELECT *
+FROM title_basics
+WHERE primaryTitle LIKE '%ita';
+
+SELECT *
+FROM title_basics
+WHERE primaryTitle LIKE '%men%';
+
+
+SELECT *
+FROM title_basics
+WHERE primaryTitle LIKE '%men%' AND primaryTitle_tsv @@ phraseto_tsquery('english', 'men');
+
+SELECT *
+FROM title_basics
+WHERE primaryTitle LIKE '%ita' AND primaryTitle_tsv @@ phraseto_tsquery('english', 'ita');
+
